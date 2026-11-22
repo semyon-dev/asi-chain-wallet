@@ -134,12 +134,15 @@ The JSON key of every entry is the network id, and it is the same id the SDK use
     "ValidatorURL": "https://validator.example/HTTP_API",
     "ReadOnlyURL": "https://observer.example/HTTP_API",
     "IndexerURL": "https://indexer.example/v1/graphql",
-    "nodeApiProfile": "rust"
+    "nodeApiProfile": "rust",
+    "nativeTokenDecimals": 18
   }
 }
 ```
 
 An entry may also carry `name`; without it the id is used as the display name. `nodeApiProfile` selects the node API dialect (`scala` or `rust`, validated by the SDK) and falls back to the SDK default when absent.
+
+`nativeTokenDecimals` sets the native token precision used for balances, fees, history and signing. It must be an integer from 0 to 18 and defaults to **18**, because ASI networks are native18; a network with another precision must state it explicitly.
 
 ### Validation Rules
 
@@ -160,6 +163,7 @@ Warnings keep the app running and are reported per network:
 - `ReadOnlyURL` is missing or invalid: kept as empty, reported as `reads is unavailable`. There is **no** fallback to `ValidatorURL`
 - `IndexerURL` is missing or invalid: kept as empty, reported as `transaction history is unavailable`
 - `nodeApiProfile` is missing or unsupported: the SDK default profile is used
+- `nativeTokenDecimals` is present but not an integer from 0 to 18: **the whole entry is skipped**, so an unusable precision never reaches balances or signing
 
 A URL is accepted when it parses as a URL, uses the `http` or `https` protocol and contains a host. Every issue is logged once at startup with the `[NETWORKS env]` prefix, errors through `console.error` and warnings through `console.warn`.
 

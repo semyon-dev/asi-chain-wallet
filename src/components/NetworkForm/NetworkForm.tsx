@@ -2,6 +2,7 @@ import React, { Fragment } from "react";
 import styled from "styled-components";
 import { Input } from "components";
 import { AdaptiveSelect, ISelectOption } from "components/Select";
+import { DEFAULT_NATIVE_TOKEN_DECIMALS } from "config/networksEnv";
 import {
     DEFAULT_NODE_API_PROFILE,
     DIGITS_ONLY_REGEX,
@@ -10,7 +11,6 @@ import {
     isNodeApiProfile,
     isNativeTokenDecimals,
     MAX_NATIVE_TOKEN_DECIMALS,
-    NATIVE_TOKEN_DECIMALS_AMOUNT,
     NetworkName,
     NODE_API_PROFILE_DESCRIPTORS,
     validateUrl,
@@ -191,7 +191,7 @@ export const createEmptyNetworkFormValues = (): INetworkFormValues => ({
         ReadOnlyURL: "",
         IndexerURL: "",
         nodeApiProfile: DEFAULT_NODE_API_PROFILE,
-        nativeTokenDecimals: NATIVE_TOKEN_DECIMALS_AMOUNT,
+        nativeTokenDecimals: DEFAULT_NATIVE_TOKEN_DECIMALS,
     },
 });
 
@@ -370,7 +370,7 @@ export const NetworkFormFields: React.FC<NetworkFormFieldsProps> = ({
                     onChange={(event) =>
                         updateNativeTokenDecimals(event.target.value)
                     }
-                    helperText={`Match this network's denomination (0-${MAX_NATIVE_TOKEN_DECIMALS}). Legacy networks use ${NATIVE_TOKEN_DECIMALS_AMOUNT}.`}
+                    helperText={`Match this network's denomination (0-${MAX_NATIVE_TOKEN_DECIMALS}). Defaults to ${DEFAULT_NATIVE_TOKEN_DECIMALS}.`}
                     disabled={disabled}
                     error={fieldErrors.nativeTokenDecimals}
                 />

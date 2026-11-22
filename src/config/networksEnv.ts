@@ -5,7 +5,6 @@ import {
     isNodeApiProfile,
     isSameNetworkConfig,
     MAX_NATIVE_TOKEN_DECIMALS,
-    NATIVE_TOKEN_DECIMALS_AMOUNT,
     NodeApiProfile,
 } from "@asichain/asi-wallet-sdk";
 import { SdkWalletService } from "../sdk/SdkWalletService";
@@ -26,6 +25,14 @@ export interface INetworksEnvParseResult {
 }
 
 const ALLOWED_URL_PROTOCOLS = ["http:", "https:"];
+
+/**
+ * Wallet default when a network entry omits `nativeTokenDecimals`.
+ *
+ * ASI networks are native18, so an entry that does not state its precision is
+ * treated as 18 decimals. Networks with another precision must set the field.
+ */
+export const DEFAULT_NATIVE_TOKEN_DECIMALS = 18;
 
 const validateUrl = (url: string): string | null => {
     let parsed: URL;
@@ -141,7 +148,7 @@ const readNativeTokenDecimals = (
     const decimals: unknown = entry.nativeTokenDecimals;
 
     if (decimals === undefined) {
-        return NATIVE_TOKEN_DECIMALS_AMOUNT;
+        return DEFAULT_NATIVE_TOKEN_DECIMALS;
     }
 
     if (!isNativeTokenDecimals(decimals)) {
