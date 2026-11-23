@@ -1,12 +1,25 @@
-import { CustomErrorCode, getErrorMessage } from "@asichain/asi-wallet-sdk";
+import * as walletSdk from "@asichain/asi-wallet-sdk";
 import { getErrorCode } from "utils/errors";
 import { isPlainObject } from "utils/guards";
 
 export const isWalletLockedError = (error: unknown): boolean =>
-    getErrorCode(error) === CustomErrorCode.WALLET_LOCKED;
+    getErrorCode(error) === walletSdk.CustomErrorCode.WALLET_LOCKED;
 
 export const isInvalidPasswordError = (error: unknown): boolean =>
-    getErrorCode(error) === CustomErrorCode.INVALID_PASSWORD;
+    getErrorCode(error) === walletSdk.CustomErrorCode.INVALID_PASSWORD;
+
+// The published SDK predates this class. The code-freeze SDK exports it and
+// retains API_REQUEST_FAILED as the code for existing SDK consumers.
+const submissionUnknownError: unknown = Reflect.get(
+    walletSdk,
+    "DeploySubmissionUnknownError",
+);
+
+const getWalletActionErrorCode = (error: unknown): string | undefined =>
+    typeof submissionUnknownError === "function" &&
+    error instanceof submissionUnknownError
+        ? "DEPLOY_SUBMISSION_UNKNOWN"
+        : getErrorCode(error);
 
 const getStringField = (
     error: unknown,
@@ -43,7 +56,7 @@ export interface IWalletActionError {
 }
 
 export const toWalletActionError = (error: unknown): IWalletActionError => {
-    const code: string | undefined = getErrorCode(error);
+    const code: string | undefined = getWalletActionErrorCode(error);
     const name: string | undefined = getStringField(error, "name");
     const retryAfterMs: number | undefined = getRetryAfterMs(error);
     const deployId: string | undefined = getStringField(error, "deployId");
@@ -85,7 +98,7 @@ export const getWalletActionErrorMessage = (
     error: unknown,
     fallback: string,
 ): string => {
-    switch (getErrorCode(error)) {
+    switch (getWalletActionErrorCode(error)) {
         case "DEPLOY_QUEUE_FULL":
             return `Not accepted by the node: the network is busy. ${tryAgain(error)}`;
         case "DEPLOY_QUEUE_UNAVAILABLE":
@@ -109,6 +122,6 @@ export const getWalletActionErrorMessage = (
                 : "Submission outcome is unknown. Check transaction history before trying again.";
         }
         default:
-            return getErrorMessage(error, fallback);
+            return walletSdk.getErrorMessage(error, fallback);
     }
 };

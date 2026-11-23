@@ -1,3 +1,4 @@
+import * as walletSdk from "@asichain/asi-wallet-sdk";
 import {
     getDeployVerdictMessage,
     getWalletActionErrorMessage,
@@ -104,6 +105,30 @@ describe("deploy submission refusals", () => {
             "Submission outcome is unknown. Check transaction history before trying again.",
         );
     });
+
+    const sdkSubmissionUnknownError: unknown = Reflect.get(
+        walletSdk,
+        "DeploySubmissionUnknownError",
+    );
+    if (typeof sdkSubmissionUnknownError === "function") {
+        it("recognizes the packaged SDK error before passing it through Redux", () => {
+            const error: unknown = Reflect.construct(sdkSubmissionUnknownError, [
+                "send transfer",
+                "connection dropped",
+                "deploy-7f3c",
+            ]);
+            expect(error).toMatchObject({ code: "API_REQUEST_FAILED" });
+
+            const serialized = toWalletActionError(error);
+            expect(serialized).toMatchObject({
+                code: "DEPLOY_SUBMISSION_UNKNOWN",
+                deployId: "deploy-7f3c",
+            });
+            expect(getWalletActionErrorMessage(serialized, "failed")).toBe(
+                "Submission outcome for deploy deploy-7f3c is unknown. Check its status in transaction history before trying again.",
+            );
+        });
+    }
 
     it("never infers non-acceptance from HTTP 503 alone", () => {
         expect(
