@@ -19,7 +19,11 @@ import {
     selectWalletByAccountId,
 } from "store/WalletsStore";
 import { useGetBalanceQuery } from "store/WalletsStore/api";
-import { deployContract, exploreDeploy } from "store/WalletsStore/thunks";
+import {
+    deployContract,
+    exploreDeploy,
+    getActiveNetworkRevision,
+} from "store/WalletsStore/thunks";
 import {
     networkOperationFinished,
     networkOperationStarted,
@@ -32,6 +36,8 @@ import {
     useWalletSessionAction,
 } from "./useWalletSessionAction";
 
+const NETWORK_CHANGED_ERROR =
+    "Network changed while the deploy was awaiting confirmation. Check the details and deploy again.";
 const MIN_PHLO_LIMIT = 1;
 const MAX_PHLO_LIMIT = Number.MAX_SAFE_INTEGER;
 
@@ -65,11 +71,11 @@ enum DeployConfirmationMods {
 
 interface IPendingDeployRequest {
     mode: DeployConfirmationMods.DEPLOY;
-    networkKey: string;
     term: string;
     fileName?: string;
     phloLimit: number;
     nativeTokenDecimals: number;
+    networkRevision: string;
     walletId: string;
     account: IUnlockedAccountMeta;
     networkName: string;
@@ -142,7 +148,6 @@ export const useDeployContract = ({
     );
     const network = useSelector(selectSelectedNetwork);
     const networkName = network.name;
-    const networkKey = JSON.stringify([network.id, network.validatorUrl, network.nodeApiProfile]);
     const nativeTokenDecimals = useSelector(
         selectSelectedNetworkNativeTokenDecimals,
     );
@@ -267,8 +272,15 @@ export const useDeployContract = ({
                 throw new Error("Deploy details are missing. Please retry.");
             }
 
-            if (pendingRequest.phloPrice !== phloPrice || pendingRequest.networkKey !== networkKey) {
-                throw new Error("Deploy settings changed. Review the current network and Phlo Price.");
+            if (pendingRequest.phloPrice !== phloPrice) {
+                throw new Error("Deploy settings changed. Review the current Phlo Price.");
+            }
+
+            if (
+                pendingRequest.networkRevision !==
+                dispatch(getActiveNetworkRevision())
+            ) {
+                throw new Error(NETWORK_CHANGED_ERROR);
             }
 
             clearDeployWatch();
@@ -364,12 +376,12 @@ export const useDeployContract = ({
 
         setPendingRequest({
             mode: DeployConfirmationMods.DEPLOY,
-            networkKey,
             term,
             fileName,
             phloLimit: phloLimitValue,
             phloPrice,
             nativeTokenDecimals,
+            networkRevision,
             walletId,
             account,
             networkName,
