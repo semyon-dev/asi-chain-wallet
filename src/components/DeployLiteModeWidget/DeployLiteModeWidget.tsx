@@ -484,7 +484,7 @@ const DeployLiteModeBoard: React.FC = () => {
                             !code.trim() ||
                             !account ||
                             !isBalanceReady ||
-                            !isPhloLimitValid
+                            !isPhloLimitValid || !pendingPhloPrice
                         }
                     >
                         <h3>Deploy</h3>

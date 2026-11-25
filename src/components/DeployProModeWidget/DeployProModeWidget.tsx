@@ -1409,7 +1409,7 @@ const DeployProModeBoard: React.FC = () => {
                             !deployableFile ||
                             !account ||
                             !isBalanceReady ||
-                            !isPhloLimitValid
+                            !isPhloLimitValid || !pendingPhloPrice
                         }
                     >
                         <h3>Deploy</h3>

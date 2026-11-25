@@ -96,6 +96,7 @@ const deployPayload = {
     accountId: ACCOUNT_ID,
     term: "new x in { x!(1) }",
     phloLimit: 1_000,
+    phloPrice: "100000000000",
 };
 
 describe("submission refusals through dispatch(...).unwrap()", () => {

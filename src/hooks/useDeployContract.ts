@@ -5,7 +5,6 @@ import {
     DeployStatus,
     getErrorMessage,
     isIntegerInRange,
-    DEFAULT_PHLO_PRICE,
 } from "@asichain/asi-wallet-sdk";
 import { RootState } from "store";
 import { useAppDispatch } from "store/hooks";
@@ -66,6 +65,7 @@ enum DeployConfirmationMods {
 
 interface IPendingDeployRequest {
     mode: DeployConfirmationMods.DEPLOY;
+    networkKey: string;
     term: string;
     fileName?: string;
     phloLimit: number;
@@ -140,7 +140,9 @@ export const useDeployContract = ({
             ? selectWalletByAccountId(state, selectedAccountId)
             : null,
     );
-    const networkName = useSelector(selectSelectedNetwork).name;
+    const network = useSelector(selectSelectedNetwork);
+    const networkName = network.name;
+    const networkKey = JSON.stringify([network.id, network.validatorUrl, network.nodeApiProfile]);
     const nativeTokenDecimals = useSelector(
         selectSelectedNetworkNativeTokenDecimals,
     );
@@ -265,6 +267,10 @@ export const useDeployContract = ({
                 throw new Error("Deploy details are missing. Please retry.");
             }
 
+            if (pendingRequest.phloPrice !== phloPrice || pendingRequest.networkKey !== networkKey) {
+                throw new Error("Deploy settings changed. Review the current network and Phlo Price.");
+            }
+
             clearDeployWatch();
             emit({
                 type: DeployEventTypes.DEPLOY_STARTED,
@@ -277,6 +283,7 @@ export const useDeployContract = ({
                     accountId: pendingRequest.account.id,
                     term: pendingRequest.term,
                     phloLimit: pendingRequest.phloLimit,
+                    phloPrice: pendingRequest.phloPrice,
                     password,
                 }),
             ).unwrap();
@@ -337,7 +344,7 @@ export const useDeployContract = ({
 
         const minGasCost = getDeployCostAtomic(phloLimitValue, phloPrice);
 
-        if (minGasCost === null || phloPrice !== String(DEFAULT_PHLO_PRICE)) {
+        if (!phloPrice || minGasCost === null || minGasCost >= (1n << 256n)) {
             emit({
                 type: DeployEventTypes.DEPLOY_FAILED,
                 message: "Deploy aborted: invalid phlo price",
@@ -357,6 +364,7 @@ export const useDeployContract = ({
 
         setPendingRequest({
             mode: DeployConfirmationMods.DEPLOY,
+            networkKey,
             term,
             fileName,
             phloLimit: phloLimitValue,

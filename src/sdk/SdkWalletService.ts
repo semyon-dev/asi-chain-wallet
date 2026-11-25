@@ -496,13 +496,10 @@ export class SdkWalletService {
     }
 
     public deploy(
-        { walletId, accountId, term, phloLimit }: IDeployRequest,
+        request: IDeployRequest,
         password?: string,
     ): Promise<IReservedOperationResult> {
-        return this.requireClient().deploy(
-            { walletId, accountId, term, phloLimit },
-            password,
-        );
+        return this.requireClient().deploy(request, password);
     }
 
     public exploreDeploy(term: string): Promise<unknown> {
