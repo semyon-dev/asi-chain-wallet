@@ -1,127 +1,149 @@
-import * as walletSdk from "@asichain/asi-wallet-sdk";
-import { getErrorCode } from "utils/errors";
+import {
+    ApiRequestError,
+    CustomErrorCode,
+    DeployQueueCause,
+    DeployQueueRefusedError,
+    DeployRefusalError,
+    DeployStatus,
+    DeploySubmissionUnknownError,
+    DeployVerdictError,
+    DeployVerdictStatus,
+    getErrorMessage,
+} from "@asichain/asi-wallet-sdk";
+import { getErrorCode, getErrorName } from "utils/errors";
 import { isPlainObject } from "utils/guards";
 
 export const isWalletLockedError = (error: unknown): boolean =>
-    getErrorCode(error) === walletSdk.CustomErrorCode.WALLET_LOCKED;
+    getErrorCode(error) === CustomErrorCode.WALLET_LOCKED;
 
 export const isInvalidPasswordError = (error: unknown): boolean =>
-    getErrorCode(error) === walletSdk.CustomErrorCode.INVALID_PASSWORD;
+    getErrorCode(error) === CustomErrorCode.INVALID_PASSWORD;
 
-// The published SDK predates this class. The code-freeze SDK exports it and
-// retains API_REQUEST_FAILED as the code for existing SDK consumers.
-const submissionUnknownError: unknown = Reflect.get(
-    walletSdk,
-    "DeploySubmissionUnknownError",
-);
-
-const getWalletActionErrorCode = (error: unknown): string | undefined =>
-    typeof submissionUnknownError === "function" &&
-    error instanceof submissionUnknownError
-        ? "DEPLOY_SUBMISSION_UNKNOWN"
-        : getErrorCode(error);
-
-const getStringField = (
-    error: unknown,
-    field: string,
-): string | undefined => {
-    const value: unknown = isPlainObject(error) ? error[field] : undefined;
-
-    return typeof value === "string" && value ? value : undefined;
-};
-
-const getRetryAfterMs = (error: unknown): number | undefined => {
-    const value: unknown = isPlainObject(error) ? error.retryAfterMs : undefined;
-
-    return typeof value === "number" && Number.isFinite(value) && value >= 0
-        ? value
-        : undefined;
-};
-
-/**
- * A serializable rejection payload for wallet actions.
- *
- * Redux Toolkit's default error serializer keeps only the string `name`,
- * `message`, `stack` and `code` fields, so a raw SDK error loses the deploy
- * queue's wait and the signed deploy ID on its way through `.unwrap()`. The
- * thunks pass this plain object to `rejectWithValue` to keep the fields that
- * the messages need.
- */
 export interface IWalletActionError {
     message: string;
     name?: string;
     code?: string;
+    reason?: string;
     retryAfterMs?: number;
-    deployId?: string;
+    queueCause?: DeployQueueCause;
+    unknownOutcomeDeployId?: string;
 }
 
-export const toWalletActionError = (error: unknown): IWalletActionError => {
-    const code: string | undefined = getWalletActionErrorCode(error);
-    const name: string | undefined = getStringField(error, "name");
-    const retryAfterMs: number | undefined = getRetryAfterMs(error);
-    const deployId: string | undefined = getStringField(error, "deployId");
+const isWalletActionError = (error: unknown): error is IWalletActionError =>
+    isPlainObject(error) && typeof error.message === "string";
 
-    return {
-        message: getStringField(error, "message") ?? "",
-        ...(name && { name }),
-        ...(code && { code }),
-        ...(retryAfterMs !== undefined && { retryAfterMs }),
-        ...(deployId && { deployId }),
-    };
+export const toWalletActionError = (error: unknown): IWalletActionError => ({
+    message: getErrorMessage(error, ""),
+    name: getErrorName(error),
+    code: getErrorCode(error),
+    ...(error instanceof ApiRequestError && { reason: error.reason }),
+    ...(error instanceof DeployRefusalError && {
+        retryAfterMs: error.retryAfterMs,
+    }),
+    ...(error instanceof DeployQueueRefusedError && {
+        queueCause: error.queueCause,
+    }),
+    ...(error instanceof DeploySubmissionUnknownError && {
+        unknownOutcomeDeployId: error.deployId,
+    }),
+});
+
+const DEPLOY_QUEUE_CAUSE_MESSAGES: Readonly<
+    Record<DeployQueueCause, string>
+> = {
+    validator:
+        "the validator cannot process this transaction within its validity window.",
+    validator_idle:
+        "the validator is not producing blocks. You can choose another validator.",
+    shard: "shard finalization is delayed.",
+    storage: "the validator's deploy queue storage is full.",
+    deployer_share: "this account already has too many transactions waiting.",
 };
 
-const tryAgain = (error: unknown): string => {
-    const retryAfterMs = getRetryAfterMs(error);
-
-    return retryAfterMs === undefined
-        ? "Please try again later."
-        : `Please try again in ${Math.max(1, Math.ceil(retryAfterMs / 1000))} s.`;
+const DEPLOY_VERDICT_MESSAGES: Readonly<
+    Record<DeployVerdictStatus, string>
+> = {
+    [DeployStatus.REJECTED]:
+        "The node rejected the transaction when it left the deploy queue. It was not executed and no funds moved.",
+    [DeployStatus.EXPIRED]:
+        "The transaction expired and its effects did not reach finalized state. Create a new transaction.",
+    [DeployStatus.FAILED]:
+        "The transaction was executed but its effects did not apply.",
 };
 
-export const getDeployVerdictMessage = (error: unknown): string | undefined => {
-    const detail: unknown = isPlainObject(error) ? error.detail : undefined;
-    const suffix = typeof detail === "string" && detail ? ` Node detail: ${detail}` : "";
-
-    switch (getErrorCode(error)) {
-        case "DEPLOY_VERDICT_REJECTED":
-            return `The node rejected the transaction when it left the deploy queue. It was not executed and no funds moved.${suffix}`;
-        case "DEPLOY_VERDICT_EXPIRED":
-            return "The transaction expired and its effects did not reach finalized state. Create a new transaction.";
-        case "DEPLOY_VERDICT_FAILED":
-            return `The transaction was executed but its effects did not apply.${suffix}`;
-        default:
-            return undefined;
+const getRetryHint = (retryAfterMs: number | undefined): string => {
+    if (retryAfterMs === undefined) {
+        return "Please try again later.";
     }
+
+    const retryAfterSeconds: number = Math.max(
+        1,
+        Math.ceil(retryAfterMs / 1000),
+    );
+
+    return `Please try again in ${retryAfterSeconds} s.`;
+};
+
+const getQueueFullMessage = ({
+    queueCause,
+    retryAfterMs,
+}: IWalletActionError): string => {
+    const cause: string = queueCause
+        ? DEPLOY_QUEUE_CAUSE_MESSAGES[queueCause]
+        : "the network is busy.";
+
+    return `Not accepted by the node: ${cause} ${getRetryHint(retryAfterMs)}`;
+};
+
+const getRefusalReasonMessage = (
+    error: IWalletActionError,
+    fallback: string,
+): string =>
+    error.reason
+        ? `Not accepted by the node: ${error.reason}`
+        : getErrorMessage(error, fallback);
+
+export const getDeployVerdictMessage = (
+    error: unknown,
+): string | undefined => {
+    if (!(error instanceof DeployVerdictError)) {
+        return undefined;
+    }
+
+    const message: string = DEPLOY_VERDICT_MESSAGES[error.state];
+
+    return error.detail ? `${message} Node detail: ${error.detail}` : message;
 };
 
 export const getWalletActionErrorMessage = (
     error: unknown,
     fallback: string,
 ): string => {
-    switch (getWalletActionErrorCode(error)) {
-        case "DEPLOY_QUEUE_FULL":
-            return `Not accepted by the node: the network is busy. ${tryAgain(error)}`;
-        case "DEPLOY_QUEUE_UNAVAILABLE":
-            return `Not accepted by the node: its deploy queue is temporarily unavailable. ${tryAgain(error)}`;
-        case "DEPLOY_ADMISSION_REFUSED":
-            return "Not accepted by the node. Please try again later.";
-        case "DEPLOY_TOO_LARGE":
-            return "Not accepted by the node: the transaction is too large.";
-        case "DEPLOY_EXPIRED":
-            return "Not accepted by the node: the transaction has expired. Create a new transaction.";
-        case "DEPLOY_WINDOW_INVALID":
-            return "Not accepted by the node yet. Please try again later.";
-        case "DEPLOY_SUBMISSION_UNKNOWN": {
-            const deployId: string | undefined = getStringField(
-                error,
-                "deployId",
-            );
+    if (!isWalletActionError(error)) {
+        return getErrorMessage(error, fallback);
+    }
 
-            return deployId
-                ? `Submission outcome for deploy ${deployId} is unknown. Check its status in transaction history before trying again.`
-                : "Submission outcome is unknown. Check transaction history before trying again.";
-        }
+    if (error.unknownOutcomeDeployId) {
+        return `Submission outcome for deploy ${error.unknownOutcomeDeployId} is unknown. Check its status in transaction history before trying again.`;
+    }
+
+    switch (error.code) {
+        case CustomErrorCode.DEPLOY_QUEUE_FULL:
+            return getQueueFullMessage(error);
+        case CustomErrorCode.DEPLOY_QUEUE_UNAVAILABLE:
+            return `Not accepted by the node: its deploy queue is temporarily unavailable. ${getRetryHint(error.retryAfterMs)}`;
+        case CustomErrorCode.DEPLOY_ADMISSION_REFUSED:
+            return "Not accepted by the node. Please try again later.";
+        case CustomErrorCode.DEPLOY_TOO_LARGE:
+            return "Not accepted by the node: the transaction is too large.";
+        case CustomErrorCode.DEPLOY_EXPIRED:
+            return "Not accepted by the node: the transaction has expired. Create a new transaction.";
+        case CustomErrorCode.DEPLOY_WINDOW_INVALID:
+            return "Not accepted by the node yet. Please try again later.";
+        case CustomErrorCode.VALIDATOR_NOT_BONDED:
+        case CustomErrorCode.DEPLOY_SUBMISSION_REJECTED:
+            return getRefusalReasonMessage(error, fallback);
         default:
-            return walletSdk.getErrorMessage(error, fallback);
+            return getErrorMessage(error, fallback);
     }
 };
