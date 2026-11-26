@@ -161,6 +161,8 @@ export interface ITransferPayload {
     accountId: string;
     to: Address;
     amount: string;
+    phloLimit: number;
+    phloPrice: string;
     password?: string;
 }
 
@@ -521,7 +523,7 @@ export const sendTransaction = createAppAsyncThunk<
 >(
     "wallets-store/sendTransaction",
     async (
-        { walletId, accountId, to, amount, password }: ITransferPayload,
+        { walletId, accountId, to, amount, phloLimit, phloPrice, password }: ITransferPayload,
         { getState, dispatch, rejectWithValue, extra: { walletService } },
     ) => {
         if (to.trim().toLowerCase().startsWith("0x")) {
@@ -549,6 +551,8 @@ export const sendTransaction = createAppAsyncThunk<
                     accountId,
                     to,
                     amount,
+                    phloLimit,
+                    phloPrice,
                 },
                 password,
             );

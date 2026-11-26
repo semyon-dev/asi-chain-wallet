@@ -475,10 +475,8 @@ export class SdkWalletService {
 
     public async transfer(
         {
-            walletId,
-            accountId,
-            to,
             amount,
+            ...request
         }: Omit<ITransferRequest, "amount"> & { amount: string },
         password?: string,
     ): Promise<IReservedOperationResult> {
@@ -486,13 +484,19 @@ export class SdkWalletService {
 
         return client.transfer(
             {
-                walletId,
-                accountId,
-                to,
+                ...request,
                 amount: client.toExactAtomicAmount(amount),
             },
             password,
         );
+    }
+
+    public getTransferQuote() {
+        return this.requireClient().getTransferQuote();
+    }
+
+    public getValidatorPhloParameters() {
+        return this.requireClient().getValidatorPhloParameters();
     }
 
     public deploy(

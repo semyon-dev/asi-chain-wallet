@@ -13,9 +13,19 @@ import {
     IUnlockedWalletAndAccountPathFromMeta,
 } from "./helpers";
 
-import { parsePositivePrice } from "utils/deployPrice";
-
 export const HISTORY_LIMIT = 50;
+export const PHLO_PARAMETERS_POLLING_INTERVAL_MS = 60_000;
+
+interface ITransferQuote {
+    phloLimit: number;
+    phloPrice: string;
+    gasReserve: string;
+}
+
+interface IValidatorPhloParameters {
+    minPhloPrice: string;
+    maxPhloLimit?: string;
+}
 
 export enum WalletsApiTags {
     BALANCE = "Balance",
@@ -77,17 +87,42 @@ export const walletsApi = createApi({
     refetchOnMountOrArgChange: true,
     keepUnusedDataFor: ACCOUNT_DATA_POLLING_INTERVAL_SECONDS,
     endpoints: (build) => ({
-        getMinimumPhloPrice: build.query<string, string>({
-            async queryFn(validatorUrl, { signal }) {
+        getValidatorPhloParameters: build.query<IValidatorPhloParameters, string>({
+            async queryFn(networkRevision, { getState, extra }) {
                 try {
-                    const url = `${validatorUrl.replace(/\/+$/, "")}/api/status`;
-                    const response = await fetch(url, { signal, cache: "no-store" });
-                    if (!response.ok) throw new Error(`Validator status returned HTTP ${response.status}`);
-                    const minimum = parsePositivePrice((await response.json()).minPhloPrice);
-                    if (!minimum) throw new Error("Validator returned an invalid minimum Phlo Price");
-                    return { data: minimum };
+                    const { minPhloPrice, maxPhloLimit } =
+                        await getWalletService(extra).getValidatorPhloParameters();
+                    if (!isSelectedNetworkRevision(getState, networkRevision)) {
+                        return { error: NETWORK_CONFIGURATION_CHANGED_ERROR };
+                    }
+                    return {
+                        data: {
+                            minPhloPrice: minPhloPrice.toString(),
+                            maxPhloLimit: maxPhloLimit?.toString(),
+                        },
+                    };
                 } catch (error) {
                     return { error: toErrorMessage(error, "Could not read validator status") };
+                }
+            },
+        }),
+        getTransferQuote: build.query<ITransferQuote, string>({
+            async queryFn(networkRevision, { getState, extra }) {
+                try {
+                    const { phloLimit, phloPrice, gasReserve } =
+                        await getWalletService(extra).getTransferQuote();
+                    if (!isSelectedNetworkRevision(getState, networkRevision)) {
+                        return { error: NETWORK_CONFIGURATION_CHANGED_ERROR };
+                    }
+                    return {
+                        data: {
+                            phloLimit,
+                            phloPrice: phloPrice.toString(),
+                            gasReserve: gasReserve.toString(),
+                        },
+                    };
+                } catch (error) {
+                    return { error: toErrorMessage(error, "Could not load the transfer fee") };
                 }
             },
         }),
@@ -207,7 +242,8 @@ export const walletsApi = createApi({
 });
 
 export const {
-    useGetMinimumPhloPriceQuery,
+    useGetValidatorPhloParametersQuery,
+    useGetTransferQuoteQuery,
     useGetBalanceQuery,
     useLazyGetBalanceQuery,
     useGetTransactionHistoryQuery,
