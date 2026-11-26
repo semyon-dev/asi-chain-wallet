@@ -41,7 +41,12 @@ import {
     selectSelectedAccount,
     selectSelectedNetworkRevision,
 } from "store/WalletsStore";
-import { useGetBalanceQuery } from "store/WalletsStore/api";
+import {
+    ITransferQuote,
+    PHLO_PARAMETERS_POLLING_INTERVAL_MS,
+    useGetBalanceQuery,
+    useGetTransferQuoteQuery,
+} from "store/WalletsStore/api";
 import { skipToken } from "@reduxjs/toolkit/query";
 import { IWalletSessionContext, WalletKind } from "types/bridgeWalletSession";
 import {
@@ -55,7 +60,7 @@ import {
 } from "store/NetworkActivity";
 import { IUnlockedAccountMeta, IUnlockedWalletMeta } from "types/wallet";
 import { ASI_DECIMALS, fromAtomicAmount } from "@asichain/asi-wallet-sdk";
-import { BRIDGE_LOCK_MAX_GAS_COST } from "services/rchain";
+import { BRIDGE_LOCK_PHLO_LIMIT } from "services/rchain";
 import {
     getAmountValidationError,
     getMaxSendableAmount,
@@ -89,6 +94,8 @@ interface IPendingBridgeLock {
     accountName: string;
     accountAddress: string;
     networkId: string;
+    networkRevision: string;
+    quote: ITransferQuote;
     recipient: string;
     amount: string;
     destChainId: number;
@@ -377,6 +384,23 @@ export const Bridge: React.FC = () => {
     const dstChain = bridgeChainForKey(dstChainKey);
     const srcKind = srcChain.kind;
 
+    const { currentData: quote, isError: isQuoteError } =
+        useGetTransferQuoteQuery(
+            selectedAccount && srcKind === "asi"
+                ? {
+                    networkRevision,
+                    preferredLimit: BRIDGE_LOCK_PHLO_LIMIT,
+                }
+                : skipToken,
+            { pollingInterval: PHLO_PARAMETERS_POLLING_INTERVAL_MS },
+        );
+    const gasReserve = quote && !isQuoteError
+        ? BigInt(quote.gasReserve)
+        : undefined;
+    const confirmedGasReserve = pendingLock
+        ? BigInt(pendingLock.quote.gasReserve)
+        : 0n;
+
     const evm = useEvmBridge(srcChain, false);
     const evmDestination = useEvmBridge(dstChain, true);
     const cosmos = useCosmosWallet();
@@ -420,7 +444,10 @@ export const Bridge: React.FC = () => {
                 throw new Error(LOCK_DETAILS_MISSING_ERROR);
             }
 
-            if (pendingLock.networkId !== selectedNetwork.id) {
+            if (
+                pendingLock.networkId !== selectedNetwork.id ||
+                pendingLock.networkRevision !== networkRevision
+            ) {
                 throw new Error(NETWORK_CHANGED_ERROR);
             }
 
@@ -432,6 +459,8 @@ export const Bridge: React.FC = () => {
                     amount: pendingLock.amount,
                     destChainId: pendingLock.destChainId,
                     bridgeUri: pendingLock.bridgeUri,
+                    phloLimit: pendingLock.quote.phloLimit,
+                    phloPrice: pendingLock.quote.phloPrice,
                     password,
                     network: selectedNetwork,
                 }),
@@ -490,14 +519,14 @@ export const Bridge: React.FC = () => {
           : txHash;
 
     const getAmountError = (): string => {
-        if (!isBalanceReady) {
+        if (!isBalanceReady || gasReserve === undefined) {
             return "";
         }
 
         const validationError = getAmountValidationError(
             amount,
             selectedASIAccountBalance,
-            BRIDGE_LOCK_MAX_GAS_COST,
+            gasReserve,
             true,
             ASI_DECIMALS,
         );
@@ -511,7 +540,8 @@ export const Bridge: React.FC = () => {
     const amountError = getAmountError();
     const balanceLoadingStatus =
         !isBalanceReady && !isBalanceError ? BALANCE_LOADING_ERROR : "";
-    const balanceError = isBalanceError ? BALANCE_UNAVAILABLE_ERROR : "";
+    const balanceError = isBalanceError ? BALANCE_UNAVAILABLE_ERROR
+        : isQuoteError ? "Could not load the validator's lock fee." : "";
     const shownError =
         (srcKind === "evm" ? evm.error?.message : lockError) ||
         balanceError ||
@@ -578,9 +608,10 @@ export const Bridge: React.FC = () => {
 
     const maxAmount = (): void => {
         if (srcKind === "asi") {
+            if (gasReserve === undefined) return;
             const max = getMaxSendableAmount(
                 selectedASIAccountBalance,
-                BRIDGE_LOCK_MAX_GAS_COST,
+                gasReserve,
                 ASI_DECIMALS,
             );
 
@@ -712,12 +743,20 @@ export const Bridge: React.FC = () => {
                 return;
             }
 
+            if (!quote || isQuoteError || gasReserve === undefined) {
+                setLockError("Could not load the validator's lock fee.");
+
+                return;
+            }
+
             setPendingLock({
                 walletId: activeWallet.id,
                 accountId: selectedAccount.id,
                 accountName: selectedAccount.name,
                 accountAddress: selectedAccount.address,
                 networkId: selectedNetwork.id,
+                networkRevision,
+                quote,
                 recipient,
                 amount,
                 destChainId: dstChain.routeId,
@@ -744,6 +783,7 @@ export const Bridge: React.FC = () => {
     const lockDisabled =
         busy ||
         !isBalanceReady ||
+        (srcKind === "asi" && gasReserve === undefined) ||
         isBalanceFetching ||
         !sourceAccountLoaded ||
         !destinationAccountLoaded ||
@@ -977,10 +1017,10 @@ export const Bridge: React.FC = () => {
                 recipient={pendingLock?.recipient ?? ""}
                 senderAddress={pendingLock?.accountAddress ?? ""}
                 senderName={pendingLock?.accountName ?? ""}
-                maxFee={BRIDGE_LOCK_MAX_GAS_COST}
+                maxFee={confirmedGasReserve}
                 nativeTokenDecimals={ASI_DECIMALS}
                 feeLabel={`up to ${fromAtomicAmount(
-                    BRIDGE_LOCK_MAX_GAS_COST,
+                    confirmedGasReserve,
                     ASI_DECIMALS,
                 )}`}
                 feeDetailLabel="Estimated maximum fee"

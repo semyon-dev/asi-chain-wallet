@@ -16,10 +16,15 @@ import {
 export const HISTORY_LIMIT = 50;
 export const PHLO_PARAMETERS_POLLING_INTERVAL_MS = 60_000;
 
-interface ITransferQuote {
+export interface ITransferQuote {
     phloLimit: number;
     phloPrice: string;
     gasReserve: string;
+}
+
+export interface ITransferQuoteQueryArgs {
+    networkRevision: string;
+    preferredLimit?: number;
 }
 
 interface IValidatorPhloParameters {
@@ -106,11 +111,11 @@ export const walletsApi = createApi({
                 }
             },
         }),
-        getTransferQuote: build.query<ITransferQuote, string>({
-            async queryFn(networkRevision, { getState, extra }) {
+        getTransferQuote: build.query<ITransferQuote, ITransferQuoteQueryArgs>({
+            async queryFn({ networkRevision, preferredLimit }, { getState, extra }) {
                 try {
                     const { phloLimit, phloPrice, gasReserve } =
-                        await getWalletService(extra).getTransferQuote();
+                        await getWalletService(extra).getTransferQuote(preferredLimit);
                     if (!isSelectedNetworkRevision(getState, networkRevision)) {
                         return { error: NETWORK_CONFIGURATION_CHANGED_ERROR };
                     }

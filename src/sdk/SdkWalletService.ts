@@ -491,8 +491,8 @@ export class SdkWalletService {
         );
     }
 
-    public getTransferQuote() {
-        return this.requireClient().getTransferQuote();
+    public getTransferQuote(preferredLimit?: number) {
+        return this.requireClient().getTransferQuote(preferredLimit);
     }
 
     public getValidatorPhloParameters() {

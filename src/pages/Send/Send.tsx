@@ -327,7 +327,7 @@ export const Send: React.FC = () => {
     );
     const networkRevision = useSelector(selectSelectedNetworkRevision);
     const { currentData: quote, isError: isQuoteError } = useGetTransferQuoteQuery(
-        selectedAccount ? networkRevision : skipToken,
+        selectedAccount ? { networkRevision } : skipToken,
         { pollingInterval: PHLO_PARAMETERS_POLLING_INTERVAL_MS },
     );
     const transferGasReserve = quote && !isQuoteError
