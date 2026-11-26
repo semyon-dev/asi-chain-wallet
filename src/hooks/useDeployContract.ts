@@ -5,8 +5,8 @@ import {
     DeployStatus,
     getErrorMessage,
     isIntegerInRange,
-    NATIVE_TOKEN_DECIMALS_AMOUNT,
 } from "@asichain/asi-wallet-sdk";
+import { isUnknownSubmissionOutcome } from "sdk";
 import { RootState } from "store";
 import { useAppDispatch } from "store/hooks";
 import {
@@ -14,25 +14,31 @@ import {
     selectAccountById,
     selectDeployWatch,
     selectSelectedAccountId,
-    selectSelectedNetworkId,
+    selectSelectedNetworkNativeTokenDecimals,
+    selectSelectedNetworkRevision,
     selectSelectedNetwork,
     selectWalletByAccountId,
 } from "store/WalletsStore";
 import { useGetBalanceQuery } from "store/WalletsStore/api";
-import { deployContract, exploreDeploy } from "store/WalletsStore/thunks";
+import {
+    deployContract,
+    exploreDeploy,
+    getActiveNetworkRevision,
+} from "store/WalletsStore/thunks";
 import {
     networkOperationFinished,
     networkOperationStarted,
     selectIsNetworkOperationPending,
 } from "store/NetworkActivity";
 import { IUnlockedAccountMeta } from "types/wallet";
+import { canCoverDeployCost, getDeployCostAtomic } from "utils/deployFees";
 import {
     IPasswordPromptProps,
     useWalletSessionAction,
 } from "./useWalletSessionAction";
 
-const ATOMIC_UNITS_PER_ASI = 10 ** NATIVE_TOKEN_DECIMALS_AMOUNT;
-
+const NETWORK_CHANGED_ERROR =
+    "Network changed while the deploy was awaiting confirmation. Check the details and deploy again.";
 const MIN_PHLO_LIMIT = 1;
 const MAX_PHLO_LIMIT = Number.MAX_SAFE_INTEGER;
 
@@ -53,7 +59,11 @@ export type TDeployEvent =
     | { type: DeployEventTypes.DEPLOY_SUBMITTED; deployId: string }
     | { type: DeployEventTypes.DEPLOY_STATUS; status: DeployStatus }
     | { type: DeployEventTypes.DEPLOY_CONFIRMED }
-    | { type: DeployEventTypes.DEPLOY_FAILED; message: string }
+    | {
+          type: DeployEventTypes.DEPLOY_FAILED;
+          message: string;
+          deployId?: string;
+      }
     | { type: DeployEventTypes.DEPLOY_UNRESOLVED; message: string }
     | { type: DeployEventTypes.EXPLORE_STARTED; fileName?: string }
     | { type: DeployEventTypes.EXPLORE_COMPLETED; result: unknown }
@@ -69,6 +79,12 @@ interface IPendingDeployRequest {
     term: string;
     fileName?: string;
     phloLimit: number;
+    nativeTokenDecimals: number;
+    networkRevision: string;
+    walletId: string;
+    account: IUnlockedAccountMeta;
+    networkName: string;
+    phloPrice: string;
 }
 
 interface IPendingExploreRequest {
@@ -88,12 +104,16 @@ export interface IUseDeployContractOptions {
 export interface IUseDeployContractResponse {
     account: IUnlockedAccountMeta | null;
     networkName: string;
+    nativeTokenDecimals: number;
+    pendingPhloLimit: string;
+    pendingPhloPrice: string;
     isBalanceReady: boolean;
     isPhloLimitValid: boolean;
     isBlockedByAnotherChainOperation: boolean;
     submittedDeployId: string;
     submittedDeployStatus: string;
     unresolvedReason: string;
+    failedReason: string;
     pendingTerm: string;
     pendingFileName?: string;
     isProcessing: boolean;
@@ -132,13 +152,17 @@ export const useDeployContract = ({
             ? selectWalletByAccountId(state, selectedAccountId)
             : null,
     );
-    const networkId = useSelector(selectSelectedNetworkId);
-    const networkName = useSelector(selectSelectedNetwork).name;
+    const network = useSelector(selectSelectedNetwork);
+    const networkName = network.name;
+    const nativeTokenDecimals = useSelector(
+        selectSelectedNetworkNativeTokenDecimals,
+    );
+    const networkRevision = useSelector(selectSelectedNetworkRevision);
     const isChainOperationPending = useSelector(selectIsNetworkOperationPending);
     const { currentData: balance, isError: isBalanceError } =
         useGetBalanceQuery(
             selectedAccountId
-                ? { accountId: selectedAccountId, networkId }
+                ? { accountId: selectedAccountId, networkRevision }
                 : skipToken,
         );
 
@@ -152,8 +176,11 @@ export const useDeployContract = ({
     const confirmationSubmittedRef = useRef(false);
     const ownsPendingOperationRef = useRef(false);
 
-    const isDeployPending =
-        pendingRequest?.mode === DeployConfirmationMods.DEPLOY;
+    const pendingDeploy: IPendingDeployRequest | null =
+        pendingRequest?.mode === DeployConfirmationMods.DEPLOY
+            ? pendingRequest
+            : null;
+    const isDeployPending = pendingDeploy !== null;
     const isOperationActive = pendingRequest !== null || isExploring;
 
     const deployWatch = useSelector((state: RootState) =>
@@ -162,7 +189,10 @@ export const useDeployContract = ({
 
     const isDeployConfirmed = deployWatch?.status === DeployStatus.FINALIZED;
     const isWaitingForConfirmation =
-        !!deployWatch && !isDeployConfirmed && !deployWatch.unresolvedReason;
+        !!deployWatch &&
+        !isDeployConfirmed &&
+        !deployWatch.unresolvedReason &&
+        !deployWatch.failedReason;
 
     const onEventRef = useRef(onEvent);
 
@@ -176,6 +206,16 @@ export const useDeployContract = ({
 
     useEffect(() => {
         if (!deployWatch) {
+            return;
+        }
+
+        if (deployWatch.failedReason) {
+            emit({
+                type: DeployEventTypes.DEPLOY_FAILED,
+                message: deployWatch.failedReason,
+                deployId: submittedDeployId,
+            });
+
             return;
         }
 
@@ -230,14 +270,24 @@ export const useDeployContract = ({
     };
 
     const deployAction = useWalletSessionAction({
-        walletId,
+        walletId: pendingDeploy?.walletId ?? walletId,
         action: (password?: string) => {
             if (
                 pendingRequest?.mode !== DeployConfirmationMods.DEPLOY ||
-                !walletId ||
-                !selectedAccountId
+                !pendingRequest.walletId
             ) {
                 throw new Error("Deploy details are missing. Please retry.");
+            }
+
+            if (pendingRequest.phloPrice !== phloPrice) {
+                throw new Error("Deploy settings changed. Review the current Phlo Price.");
+            }
+
+            if (
+                pendingRequest.networkRevision !==
+                dispatch(getActiveNetworkRevision())
+            ) {
+                throw new Error(NETWORK_CHANGED_ERROR);
             }
 
             clearDeployWatch();
@@ -248,10 +298,11 @@ export const useDeployContract = ({
 
             return dispatch(
                 deployContract({
-                    walletId,
-                    accountId: selectedAccountId,
+                    walletId: pendingRequest.walletId,
+                    accountId: pendingRequest.account.id,
                     term: pendingRequest.term,
                     phloLimit: pendingRequest.phloLimit,
+                    phloPrice: pendingRequest.phloPrice,
                     password,
                 }),
             ).unwrap();
@@ -262,9 +313,16 @@ export const useDeployContract = ({
             setSubmittedDeployId(deployId);
             emit({ type: DeployEventTypes.DEPLOY_SUBMITTED, deployId });
         },
-        onError: (message: string) => {
+        onError: (message: string, error?: unknown) => {
             confirmationSubmittedRef.current = false;
             setPendingRequest(null);
+
+            if (isUnknownSubmissionOutcome(error)) {
+                emit({ type: DeployEventTypes.DEPLOY_UNRESOLVED, message });
+
+                return;
+            }
+
             emit({ type: DeployEventTypes.DEPLOY_FAILED, message });
         },
         errorFallback: "Deploy failed",
@@ -281,7 +339,7 @@ export const useDeployContract = ({
         if (isChainOperationPending || confirmationSubmittedRef.current || isConfirmationOpen || deployAction.isRunning || isExploring) {
             return;
         }
-        if (!walletId || !selectedAccountId) {
+        if (!walletId || !selectedAccountId || !account) {
             emit({
                 type: DeployEventTypes.DEPLOY_FAILED,
                 message: "Session expired. Please login again.",
@@ -310,11 +368,18 @@ export const useDeployContract = ({
             return;
         }
 
-        const minGasCost =
-            (phloLimitValue * Number(phloPrice)) / ATOMIC_UNITS_PER_ASI;
-        const availableBalance = Number(balance);
+        const minGasCost = getDeployCostAtomic(phloLimitValue, phloPrice);
 
-        if (availableBalance <= 0 || availableBalance < minGasCost) {
+        if (!phloPrice || minGasCost === null || minGasCost >= (1n << 256n)) {
+            emit({
+                type: DeployEventTypes.DEPLOY_FAILED,
+                message: "Deploy aborted: invalid phlo price",
+            });
+
+            return;
+        }
+
+        if (!canCoverDeployCost(balance!, minGasCost, nativeTokenDecimals)) {
             emit({
                 type: DeployEventTypes.DEPLOY_FAILED,
                 message: "Deploy aborted: insufficient balance",
@@ -328,6 +393,12 @@ export const useDeployContract = ({
             term,
             fileName,
             phloLimit: phloLimitValue,
+            phloPrice,
+            nativeTokenDecimals,
+            networkRevision,
+            walletId,
+            account,
+            networkName,
         });
         setIsConfirmationOpen(true);
     };
@@ -391,8 +462,14 @@ export const useDeployContract = ({
     };
 
     return {
-        account,
-        networkName,
+        account: pendingDeploy?.account ?? account,
+        networkName: pendingDeploy?.networkName ?? networkName,
+        nativeTokenDecimals:
+            pendingDeploy?.nativeTokenDecimals ?? nativeTokenDecimals,
+        pendingPhloLimit: pendingDeploy
+            ? String(pendingDeploy.phloLimit)
+            : phloLimit,
+        pendingPhloPrice: pendingDeploy?.phloPrice ?? phloPrice,
         isBalanceReady,
         isPhloLimitValid: parsePhloLimit(phloLimit) !== null,
         isBlockedByAnotherChainOperation:
@@ -400,6 +477,7 @@ export const useDeployContract = ({
         submittedDeployId,
         submittedDeployStatus: deployWatch?.status ?? "",
         unresolvedReason: deployWatch?.unresolvedReason ?? "",
+        failedReason: deployWatch?.failedReason ?? "",
         pendingTerm: pendingRequest?.term ?? "",
         pendingFileName: pendingRequest?.fileName,
         isProcessing: deployAction.isRunning || isExploring,

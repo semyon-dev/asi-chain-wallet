@@ -1,8 +1,10 @@
 import {
     DEFAULT_NODE_API_PROFILE,
     INetworkEndpoints,
+    isNativeTokenDecimals,
     isNodeApiProfile,
     isSameNetworkConfig,
+    MAX_NATIVE_TOKEN_DECIMALS,
     NodeApiProfile,
 } from "@asichain/asi-wallet-sdk";
 import { SdkWalletService } from "../sdk/SdkWalletService";
@@ -23,6 +25,14 @@ export interface INetworksEnvParseResult {
 }
 
 const ALLOWED_URL_PROTOCOLS = ["http:", "https:"];
+
+/**
+ * Wallet default when a network entry omits `nativeTokenDecimals`.
+ *
+ * ASI networks are native18, so an entry that does not state its precision is
+ * treated as 18 decimals. Networks with another precision must set the field.
+ */
+export const DEFAULT_NATIVE_TOKEN_DECIMALS = 18;
 
 const validateUrl = (url: string): string | null => {
     let parsed: URL;
@@ -130,6 +140,30 @@ const readNodeApiProfile = (
     return profile;
 };
 
+const readNativeTokenDecimals = (
+    entry: TNetworkEnvEntry,
+    networkId: string,
+    issues: INetworksEnvIssue[],
+): number | null => {
+    const decimals: unknown = entry.nativeTokenDecimals;
+
+    if (decimals === undefined) {
+        return DEFAULT_NATIVE_TOKEN_DECIMALS;
+    }
+
+    if (!isNativeTokenDecimals(decimals)) {
+        issues.push({
+            level: "warning",
+            networkId,
+            message: `skipped: nativeTokenDecimals must be an integer from 0 to ${MAX_NATIVE_TOKEN_DECIMALS}`,
+        });
+
+        return null;
+    }
+
+    return decimals;
+};
+
 const isSameNetworkEndpoints = (first: Network, second: Network): boolean =>
     isSameNetworkConfig(
         SdkWalletService.toNetworkConfig(first),
@@ -173,7 +207,7 @@ const validateNetworksUniqueness = (
         (group: Network[]) => {
             issues.push({
                 level: "error",
-                message: `NETWORKS contains networks with the same URLs and nodeApiProfile: ${formatNetworkIds(group)}`,
+                message: `NETWORKS contains networks with the same URLs, nodeApiProfile and nativeTokenDecimals: ${formatNetworkIds(group)}`,
             });
         },
     );
@@ -288,6 +322,16 @@ export const parseNetworksEnv = (
             });
         }
 
+        const nativeTokenDecimals = readNativeTokenDecimals(
+            entry,
+            networkId,
+            issues,
+        );
+
+        if (nativeTokenDecimals === null) {
+            return;
+        }
+
         networks.push({
             id: networkId,
             name:
@@ -296,6 +340,7 @@ export const parseNetworksEnv = (
             observerUrl,
             indexerUrl,
             nodeApiProfile: readNodeApiProfile(entry, networkId, issues),
+            nativeTokenDecimals,
             isDefault: true,
         });
     });
@@ -310,8 +355,7 @@ export const parseNetworksEnv = (
     if (!hasCompleteNetwork) {
         issues.push({
             level: "error",
-            message:
-                "NETWORKS contains no fully configured network: at least one entry needs valid http(s) ValidatorURL, ReadOnlyURL and IndexerURL",
+            message: `NETWORKS contains no fully configured network: at least one entry needs valid http(s) ValidatorURL, ReadOnlyURL and IndexerURL and, if set, nativeTokenDecimals from 0 to ${MAX_NATIVE_TOKEN_DECIMALS}`,
         });
     }
 

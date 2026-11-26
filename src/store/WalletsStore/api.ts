@@ -8,11 +8,29 @@ import { Transaction } from "types/transactions";
 import { RootState } from "store";
 import { IThunkExtraArgument } from "store/appThunk";
 import {
+    getNetworkRevision,
     getUnlockedWalletAndAccountFromWalletsMeta,
     IUnlockedWalletAndAccountPathFromMeta,
 } from "./helpers";
 
 export const HISTORY_LIMIT = 50;
+export const PHLO_PARAMETERS_POLLING_INTERVAL_MS = 60_000;
+
+export interface ITransferQuote {
+    phloLimit: number;
+    phloPrice: string;
+    gasReserve: string;
+}
+
+export interface ITransferQuoteQueryArgs {
+    networkRevision: string;
+    preferredLimit?: number;
+}
+
+interface IValidatorPhloParameters {
+    minPhloPrice: string;
+    maxPhloLimit?: string;
+}
 
 export enum WalletsApiTags {
     BALANCE = "Balance",
@@ -32,18 +50,30 @@ const HISTORY_SOURCES: Record<
 
 export interface IAccountQueryArgs {
     accountId: string;
-    networkId: string;
+    networkRevision: string;
 }
 
 export interface IHistoryQueryArgs extends IAccountQueryArgs {
     source: THistorySourceFilter;
 }
 
+const NETWORK_CONFIGURATION_CHANGED_ERROR =
+    "The network configuration changed while the request was running";
+
 const toErrorMessage = (error: unknown, fallback: string): string =>
     error instanceof Error ? error.message : fallback;
 
 const getWalletService = (extra: unknown) =>
     (extra as IThunkExtraArgument).walletService;
+
+const isSelectedNetworkRevision = (
+    getState: () => unknown,
+    networkRevision: string,
+): boolean => {
+    const { selectedNetwork } = (getState() as RootState).walletsStore;
+
+    return getNetworkRevision(selectedNetwork) === networkRevision;
+};
 
 export const serializeHistoryTimestamp = (timestamp: Date | string): string => {
     if (timestamp instanceof Date) {
@@ -62,8 +92,50 @@ export const walletsApi = createApi({
     refetchOnMountOrArgChange: true,
     keepUnusedDataFor: ACCOUNT_DATA_POLLING_INTERVAL_SECONDS,
     endpoints: (build) => ({
+        getValidatorPhloParameters: build.query<IValidatorPhloParameters, string>({
+            async queryFn(networkRevision, { getState, extra }) {
+                try {
+                    const { minPhloPrice, maxPhloLimit } =
+                        await getWalletService(extra).getValidatorPhloParameters();
+                    if (!isSelectedNetworkRevision(getState, networkRevision)) {
+                        return { error: NETWORK_CONFIGURATION_CHANGED_ERROR };
+                    }
+                    return {
+                        data: {
+                            minPhloPrice: minPhloPrice.toString(),
+                            maxPhloLimit: maxPhloLimit?.toString(),
+                        },
+                    };
+                } catch (error) {
+                    return { error: toErrorMessage(error, "Could not read validator status") };
+                }
+            },
+        }),
+        getTransferQuote: build.query<ITransferQuote, ITransferQuoteQueryArgs>({
+            async queryFn({ networkRevision, preferredLimit }, { getState, extra }) {
+                try {
+                    const { phloLimit, phloPrice, gasReserve } =
+                        await getWalletService(extra).getTransferQuote(preferredLimit);
+                    if (!isSelectedNetworkRevision(getState, networkRevision)) {
+                        return { error: NETWORK_CONFIGURATION_CHANGED_ERROR };
+                    }
+                    return {
+                        data: {
+                            phloLimit,
+                            phloPrice: phloPrice.toString(),
+                            gasReserve: gasReserve.toString(),
+                        },
+                    };
+                } catch (error) {
+                    return { error: toErrorMessage(error, "Could not load the transfer fee") };
+                }
+            },
+        }),
         getBalance: build.query<string, IAccountQueryArgs>({
-            queryFn: async ({ accountId }, { getState, extra }) => {
+            queryFn: async (
+                { accountId, networkRevision },
+                { getState, extra },
+            ) => {
                 const { wallets } = (getState() as RootState).walletsStore;
 
                 const walletAndAccount: IUnlockedWalletAndAccountPathFromMeta | null =
@@ -86,7 +158,9 @@ export const walletsApi = createApi({
                         accountId,
                     );
 
-                    return { data: balance };
+                    return isSelectedNetworkRevision(getState, networkRevision)
+                        ? { data: balance }
+                        : { error: NETWORK_CONFIGURATION_CHANGED_ERROR };
                 } catch (error: unknown) {
                     return {
                         error: toErrorMessage(error, "Failed to fetch balance"),
@@ -98,7 +172,10 @@ export const walletsApi = createApi({
             ],
         }),
         getTransactionHistory: build.query<Transaction[], IHistoryQueryArgs>({
-            queryFn: async ({ accountId, source }, { getState, extra }) => {
+            queryFn: async (
+                { accountId, source, networkRevision },
+                { getState, extra },
+            ) => {
                 const { wallets } = (getState() as RootState).walletsStore;
 
                 const walletAndAccount: IUnlockedWalletAndAccountPathFromMeta | null =
@@ -124,12 +201,16 @@ export const walletsApi = createApi({
                         historyOptions.sources = HISTORY_SOURCES[source];
                     }
 
-                    const history =
-                        await getWalletService(extra).getTransactionsHistory(
-                            wallet.id,
-                            accountId,
-                            historyOptions,
-                        );
+                    const walletService = getWalletService(extra);
+                    const history = await walletService.getTransactionsHistory(
+                        wallet.id,
+                        accountId,
+                        historyOptions,
+                    );
+
+                    if (!isSelectedNetworkRevision(getState, networkRevision)) {
+                        return { error: NETWORK_CONFIGURATION_CHANGED_ERROR };
+                    }
 
                     return {
                         data: history.map((tx) => ({
@@ -138,6 +219,11 @@ export const walletsApi = createApi({
                             from: tx.from,
                             to: tx.to ?? "",
                             amount: tx.amount ?? "",
+                            nativeTokenDecimals:
+                                tx.nativeTokenDecimals ??
+                                walletService.getNetworkNativeTokenDecimals(
+                                    tx.networkId,
+                                ),
                             // Prefer ISO so client-side Date filters parse reliably.
                             timestamp: serializeHistoryTimestamp(tx.timestamp),
                             status: tx.status,
@@ -161,6 +247,8 @@ export const walletsApi = createApi({
 });
 
 export const {
+    useGetValidatorPhloParametersQuery,
+    useGetTransferQuoteQuery,
     useGetBalanceQuery,
     useLazyGetBalanceQuery,
     useGetTransactionHistoryQuery,

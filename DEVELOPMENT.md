@@ -21,8 +21,8 @@ For configuration details, see the [Configuration Guide](CONFIGURATION.md).
 
 ## Prerequisites
 
-- **Node.js**: 18.x (the Docker image builds on `node:18-alpine`, and the toolchain is pinned around `@types/node` 18)
-- **npm**: 8.x or higher
+- **Node.js**: 26.13.1 or later in the 26.x LTS line. The version in `.nvmrc` matches the Docker builder and the CodeBuild example.
+- **npm**: use the version bundled with Node.js (11.20.0 with Node.js 26.13.1).
 - **Git**
 - **Docker** (optional): only needed to run the published image
 
@@ -38,6 +38,7 @@ cd asi-chain-wallet
 ### 2. Install Dependencies
 
 ```bash
+nvm install
 npm install --legacy-peer-deps
 ```
 
@@ -52,7 +53,7 @@ cp .env.example .env
 This step is **not optional**. With an empty `.env` the application does not start:
 
 - a missing or invalid `NETWORKS` renders a configuration error instead of the UI;
-- a missing bridge variable throws while the bridge module is loaded, before React mounts.
+- Bridge is off unless `REACT_APP_BRIDGE_ENABLED` is set. An enabled build with missing or invalid Bridge values still starts: `/bridge` lists every problem, the console repeats the list with the `[bridge]` prefix, and the other routes stay available.
 
 See [CONFIGURATION.md](CONFIGURATION.md) for every variable and for what each one does.
 
@@ -214,7 +215,9 @@ Same steps against the CodeBuild project `asi-chain-wallet-prod-frontend`. The p
 
 ### AWS CodeBuild
 
-The actual build and the S3 and CloudFront deployment happen in CodeBuild. `buildspec.example.yml` is an example only and is behind the current tree: it pins Node 16, runs `npm install` without `--legacy-peer-deps`, and writes a `.env` that contains `NETWORKS` alone (no bridge variables, no `nodeApiProfile`). Use it as a shape, not as a working spec.
+The actual build and the S3 and CloudFront deployment happen in CodeBuild. `buildspec.example.yml` selects the project’s Node.js version and installs dependencies with `--legacy-peer-deps`. Its sample environment contains only `NETWORKS`; that is a supported wallet-only configuration. Supply the network profiles, and, when Bridge is wanted, the Bridge values described in [CONFIGURATION.md](CONFIGURATION.md).
+
+Bridge settings live in the CodeBuild project environment, not in this repository. A Bridge deployment must set `REACT_APP_BRIDGE_ENABLED=true` and every value from the [Bridge tables](CONFIGURATION.md#bridge-configuration) in `asi-chain-wallet-frontend` (dev) and `asi-chain-wallet-prod-frontend` (production). Without the flag the build hides Bridge and serves wallet-only routes.
 
 ## Building For Production
 
@@ -243,9 +246,13 @@ If the tree is already broken, remove `node_modules` and `package-lock.json` and
 
 Raised by `@harmoniclabs/uplc`, a transitive dependency of the Cardano libraries, during `npm run build`. The package does not get that dependency installed in a `--legacy-peer-deps` tree, and the copy that npm does install ends up nested under `@harmoniclabs/plutus-data`, where `uplc` cannot resolve it. Adding `@harmoniclabs/crypto` explicitly, or aliasing it in `config-overrides.js`, resolves it; both change the dependency set, so agree on the approach before applying it.
 
-### Blank page and `Env variable with key REACT_APP_... not found` in the console
+### `Bridge is unavailable` on `/bridge`
 
-A bridge variable is missing from `.env`. The bridge constants are evaluated at module load, so the throw happens before React mounts and no error screen is rendered. Fill the variable in and restart.
+The build enabled Bridge but one or more values are missing or malformed. The
+page lists every problem and works without a wallet; the browser console repeats
+the same list with the `[bridge]` prefix and reports when Bridge variables are
+present while the flag is off. Fix the named variables in `.env` (or the
+CodeBuild environment) and rebuild. Wallet routes stay available.
 
 ### `npm start` or `npm run build` fails with `Invalid NETWORKS env config`
 
